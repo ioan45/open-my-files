@@ -1,4 +1,5 @@
 import os
+import sys
 import winreg
 import subprocess
 import threading
@@ -22,6 +23,7 @@ KEY_ENTRY_ID = 'entry_id'
 KEY_ENTRY_PATH = 'entry_path'
 KEY_ENTRY_TYPE = 'entry_type'
 KEY_ENTRY_DETAILS = 'entry_details'
+KEY_SETTING_START_WITH_WINDOWS = 'start_with_windows'
 
 KEY_LAYOUT_MAIN = '-MAIN_LAYOUT-'
 KEY_LAYOUT_GROUP_EDIT = '-GROUP_EDIT_LAYOUT-'
@@ -45,13 +47,15 @@ KEY_BUTTON_BACK_HELP = '-HELP_BACK_BUTTON-'
 KEY_STATUS_BAR = '-STATUS_BAR-'
 KEY_LABEL_GROUP_NAME = '-GROUP_NAME_LABEL-'
 KEY_HYPERLINK_HELP = '-HELP_HYPERLINK-'
+KEY_CHECKBOX_START_WITH_WINDOWS = '-START_WITH_WINDOWS-'
 
 EVENT_OPENING_COMPLETE = '-OPENING_COMPLETE-'
 
-GROUPS_DATA_PATH = os.path.join(os.getenv('LOCALAPPDATA'), 'OpenMyFiles', 'groups.json')
+PATH_GROUPS_DATA = os.path.join(os.getenv('LOCALAPPDATA'), 'OpenMyFiles', 'groups.json')
+PATH_SETTINGS_DATA = os.path.join(os.getenv('LOCALAPPDATA'), 'OpenMyFiles', 'settings.json')
 
 def get_default_browser_path():
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\.html\\UserChoice") as id_key:
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\.html\\UserChoice") as id_key:
         browser_id = winreg.QueryValueEx(id_key, 'ProgId')[0]
     with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, f"{browser_id}\\shell\\open\\command") as path_key:
         browser_path = winreg.QueryValueEx(path_key, '')[0]
@@ -60,25 +64,41 @@ def get_default_browser_path():
 DEFAULT_BROWSER_PATH = get_default_browser_path()
 
 class AppData:  
-    def __init__(self, groups_data_path: str) -> None:
+    def __init__(self, groups_path, settings_path) -> None:
+        self.groups_path = groups_path
         self.__saved_groups_data = []
-        self.groups_path = groups_data_path
         self.groups_data = []
+        self.settings_path = settings_path
+        self.__saved_settings = dict()
+        self.settings = dict()
     
-    def load_data(self):
+    def load_groups_data(self):
         if os.path.isfile(self.groups_path):
             with open(self.groups_path, 'r') as f:
                 self.__saved_groups_data = json.load(f)
             self.groups_data = deepcopy(self.__saved_groups_data)
-    
-    def save_data(self):
+
+    def load_settings(self):
+        if os.path.isfile(self.settings_path):
+            with open(self.settings_path, 'r') as f:
+                self.__saved_settings = json.load(f)
+            self.settings = deepcopy(self.__saved_settings)
+
+    def save_group_data(self):
         self.__saved_groups_data = deepcopy(self.groups_data)
         os.makedirs(os.path.split(self.groups_path)[0], exist_ok=True)
         with open(self.groups_path, 'w') as f:
             json.dump(self.__saved_groups_data, f, indent='\t')
     
+    def save_settings(self):
+        self.__saved_settings = deepcopy(self.settings)
+        os.makedirs(os.path.split(self.settings_path)[0], exist_ok=True)
+        with open(self.settings_path, 'w') as f:
+            json.dump(self.__saved_settings, f, indent='\t')
+
     def revert_changes(self):
         self.groups_data = deepcopy(self.__saved_groups_data)
+        self.settings = deepcopy(self.__saved_settings)
     
     def refresh_ids(self, for_groups=False, for_group_with_id=None):
         if for_groups:
@@ -115,6 +135,31 @@ def change_active_layout(to_layout_key):
     window.move_to_center()
     window.reappear()
 
+def save_changes():
+    global app_data
+    app_data.save_group_data()
+    app_data.save_settings()
+    set_start_with_windows(app_data.settings[KEY_SETTING_START_WITH_WINDOWS])
+
+def set_start_with_windows(enabled):
+    app_key = 'OpenMyFiles'
+    path_to_exe = None
+    if enabled:
+        # For using this application as an executable made with PyInstaller:
+        # The PyInstaller way of finding out if this script is running or not as an executable made by PyInstaller.
+        if getattr(sys, 'frozen', False):
+            path_to_exe = f'"{sys.executable}"'
+        else:
+            path_to_exe = f'"{sys.executable}" "{os.path.realpath(__file__)}"'
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Run", access=winreg.KEY_SET_VALUE) as reg_key:
+        if path_to_exe is None:
+            try:
+                winreg.DeleteValue(reg_key, app_key)
+            except FileNotFoundError:
+                pass
+        else:
+            winreg.SetValueEx(reg_key, app_key, 0, winreg.REG_SZ, path_to_exe)
+
 def async_group_opening(group_to_open):
     tabs_opened = 0
     for entry in group_to_open[KEY_GROUP_ENTRIES]:
@@ -133,11 +178,13 @@ def async_group_opening(group_to_open):
 
 sg.theme('DarkAmber')
 
-app_data = AppData(GROUPS_DATA_PATH)
-app_data.load_data()
+app_data = AppData(PATH_GROUPS_DATA, PATH_SETTINGS_DATA)
+app_data.load_groups_data()
+app_data.load_settings()
 
-group_to_edit = None
 active_layout_key = KEY_LAYOUT_MAIN
+group_to_edit = None
+should_start_with_windows = None
 
 layout_main = [[
         sg.Tree(create_groups_tree_data(), 
@@ -175,6 +222,11 @@ layout_main = [[
                 pad=((15, 15), (10, 15)), 
                 auto_size_text=True,
                 font=('Verdana', 10, 'normal'))
+    ],[
+        sg.Checkbox('Launch the application when Windows starts', 
+                key=KEY_CHECKBOX_START_WITH_WINDOWS,
+                default=app_data.settings[KEY_SETTING_START_WITH_WINDOWS] if KEY_SETTING_START_WITH_WINDOWS in app_data.settings else False,
+                enable_events=True)
     ]
 ]
 layout_group_edit = [[
@@ -237,7 +289,7 @@ while True:
             response = sg.popup_yes_no('\n== Save changes? ==\n')
             if response is not None:
                 if response == 'Yes':
-                    app_data.save_data()
+                    save_changes()
                 break
 
     elif event == KEY_TREE_MAIN:
@@ -282,13 +334,14 @@ while True:
         window[KEY_BUTTON_REVERT_CHANGES].update(disabled=False)
 
     elif event == KEY_BUTTON_SAVE_CHANGES:
-        app_data.save_data()
+        save_changes()
         window[KEY_BUTTON_SAVE_CHANGES].update(disabled=True)
         window[KEY_BUTTON_REVERT_CHANGES].update(disabled=True)
         window[KEY_STATUS_BAR].update(value=f"({time.strftime('%H:%M:%S', time.localtime())}) Changes have been successfully saved!")
     
     elif event == KEY_BUTTON_REVERT_CHANGES:
         app_data.revert_changes()
+        window[KEY_CHECKBOX_START_WITH_WINDOWS].update(app_data.settings[KEY_SETTING_START_WITH_WINDOWS])
         window[KEY_TREE_MAIN].update(create_groups_tree_data())
         window[KEY_BUTTON_SAVE_CHANGES].update(disabled=True)
         window[KEY_BUTTON_REVERT_CHANGES].update(disabled=True)
@@ -300,6 +353,11 @@ while True:
     elif event == KEY_HYPERLINK_HELP:
         os.startfile('https://github.com/ioan45/open-my-files')
     
+    elif event == KEY_CHECKBOX_START_WITH_WINDOWS:
+        app_data.settings[KEY_SETTING_START_WITH_WINDOWS] = values[KEY_CHECKBOX_START_WITH_WINDOWS]
+        window[KEY_BUTTON_SAVE_CHANGES].update(disabled=False)
+        window[KEY_BUTTON_REVERT_CHANGES].update(disabled=False)
+
     elif event == KEY_BUTTON_BACK_HELP:
         change_active_layout(KEY_LAYOUT_MAIN)
 
