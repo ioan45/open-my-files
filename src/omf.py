@@ -6,6 +6,8 @@ import threading
 import json
 import time
 import PySimpleGUI as sg
+from watchdog.observers import Observer
+from watchdog.events import PatternMatchingEventHandler
 from copy import deepcopy
 
 ENTRY_EXE_FILE = 'executable'
@@ -18,6 +20,7 @@ ICON_WEB_PAGE = b'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6Q
 
 KEY_GROUP_ID = 'group_id'
 KEY_GROUP_NAME = 'group_name'
+KEY_GROUP_LISTENING_DIR = 'group_listening_dir'
 KEY_GROUP_ENTRIES = 'group_entries'
 KEY_ENTRY_ID = 'entry_id'
 KEY_ENTRY_PATH = 'entry_path'
@@ -44,7 +47,9 @@ KEY_BUTTON_DELETE_ENTRIES = '-DELETE_ENTRIES_BUTTON-'
 KEY_BUTTON_EDIT_DETAILS = '-EDIT_DETAILS_BUTTON-'
 KEY_BUTTON_BACK_GROUP_EDIT = '-GROUP_EDIT_BACK_BUTTON-'
 KEY_BUTTON_BACK_HELP = '-HELP_BACK_BUTTON-'
-KEY_STATUS_BAR = '-STATUS_BAR-'
+KEY_BUTTON_LISTEN_TO_DIR = 'LISTEN_DIR_BUTTON'
+KEY_STATUS_BAR_GROUPS = '-GROUPS_STATUS_BAR-'
+KEY_STATUS_BAR_ENTRIES = '-ENTRIES_STATUS_BAR-'
 KEY_LABEL_GROUP_NAME = '-GROUP_NAME_LABEL-'
 KEY_HYPERLINK_HELP = '-HELP_HYPERLINK-'
 KEY_CHECKBOX_START_WITH_WINDOWS = '-START_WITH_WINDOWS-'
@@ -108,6 +113,62 @@ class AppData:
             for index, entry in enumerate(self.groups_data[for_group_with_id][KEY_GROUP_ENTRIES]):
                 entry[KEY_ENTRY_ID] = index
 
+def listening_on_created(event):
+    global app_data, window
+    file_path = event.src_path.replace(os.sep, '/')
+    if file_path.split('.')[-1] == 'exe':
+        entry_type = ENTRY_EXE_FILE
+    else:
+        entry_type = ENTRY_OTHER_FILE
+    path_to_listen = os.path.split(file_path)[0]
+    for group in app_data.groups_data:
+        if KEY_GROUP_LISTENING_DIR in group and group[KEY_GROUP_LISTENING_DIR] == path_to_listen:
+            group[KEY_GROUP_ENTRIES].append({
+                KEY_ENTRY_ID: len(group[KEY_GROUP_ENTRIES]),
+                KEY_ENTRY_PATH: file_path, 
+                KEY_ENTRY_TYPE: entry_type, 
+                KEY_ENTRY_DETAILS: ''
+            })
+            if group_to_edit is None:
+                window[KEY_TREE_MAIN].update(key=group[KEY_GROUP_ID], value=[len(group[KEY_GROUP_ENTRIES])])
+    if group_to_edit is not None and KEY_GROUP_LISTENING_DIR in group_to_edit and group_to_edit[KEY_GROUP_LISTENING_DIR] == path_to_listen:
+        window[KEY_TREE_GROUP_EDIT].update(create_entries_tree_data())
+    window[KEY_BUTTON_SAVE_CHANGES].update(disabled=False)
+    window[KEY_BUTTON_REVERT_CHANGES].update(disabled=False)
+    window.refresh()
+
+def listening_on_deleted(event):
+    global app_data, window
+    file_path = event.src_path.replace(os.sep, '/')
+    path_to_listen = os.path.split(file_path)[0]
+    for group in app_data.groups_data:
+        if KEY_GROUP_LISTENING_DIR in group and group[KEY_GROUP_LISTENING_DIR] == path_to_listen:
+            group[KEY_GROUP_ENTRIES][:] = [entry for entry in group[KEY_GROUP_ENTRIES] if entry[KEY_ENTRY_PATH] != file_path]
+            app_data.refresh_ids(for_group_with_id=group[KEY_GROUP_ID])
+            if group_to_edit is None:
+                window[KEY_TREE_MAIN].update(key=group[KEY_GROUP_ID], value=[len(group[KEY_GROUP_ENTRIES])])
+    if group_to_edit is not None and KEY_GROUP_LISTENING_DIR in group_to_edit and group_to_edit[KEY_GROUP_LISTENING_DIR] == path_to_listen:
+        window[KEY_TREE_GROUP_EDIT].update(create_entries_tree_data())
+    window[KEY_BUTTON_SAVE_CHANGES].update(disabled=False)
+    window[KEY_BUTTON_REVERT_CHANGES].update(disabled=False)
+    window.refresh()
+
+def listening_on_moved(event):
+    global app_data, window
+    old_file_path = event.src_path.replace(os.sep, '/')
+    new_file_path = event.dest_path.replace(os.sep, '/')
+    path_to_listen = os.path.split(old_file_path)[0]
+    for group in app_data.groups_data:
+        if KEY_GROUP_LISTENING_DIR in group and group[KEY_GROUP_LISTENING_DIR] == path_to_listen:
+            for entry in group[KEY_GROUP_ENTRIES]:
+                if entry[KEY_ENTRY_PATH] == old_file_path:
+                    entry[KEY_ENTRY_PATH] = new_file_path
+    if group_to_edit is not None and KEY_GROUP_LISTENING_DIR in group_to_edit and group_to_edit[KEY_GROUP_LISTENING_DIR] == path_to_listen:
+        window[KEY_TREE_GROUP_EDIT].update(create_entries_tree_data())
+    window[KEY_BUTTON_SAVE_CHANGES].update(disabled=False)
+    window[KEY_BUTTON_REVERT_CHANGES].update(disabled=False)
+    window.refresh()
+
 def create_entries_tree_data():
     new_tree_data = sg.TreeData()
     for entry in group_to_edit[KEY_GROUP_ENTRIES]:
@@ -140,6 +201,11 @@ def save_changes():
     app_data.save_group_data()
     app_data.save_settings()
     set_start_with_windows(app_data.settings[KEY_SETTING_START_WITH_WINDOWS])
+
+def on_app_exit():
+    global listening_observer
+    listening_observer.stop()
+    listening_observer.join()
 
 def set_start_with_windows(enabled):
     app_key = 'OpenMyFiles'
@@ -186,6 +252,20 @@ active_layout_key = KEY_LAYOUT_MAIN
 group_to_edit = None
 should_start_with_windows = None
 
+listening_event_handler = PatternMatchingEventHandler('*', None, True, True)
+listening_event_handler.on_created = listening_on_created
+listening_event_handler.on_deleted = listening_on_deleted
+listening_event_handler.on_moved = listening_on_moved
+listening_observer = Observer()
+listening_watches = []
+for group in app_data.groups_data:
+    if KEY_GROUP_LISTENING_DIR in group:
+        if os.path.isdir(group[KEY_GROUP_LISTENING_DIR]):
+            listening_watches.append(listening_observer.schedule(listening_event_handler, group[KEY_GROUP_LISTENING_DIR]))
+        else:
+            group.pop(KEY_GROUP_LISTENING_DIR)
+listening_observer.start()
+
 layout_main = [[
         sg.Tree(create_groups_tree_data(), 
                 key=KEY_TREE_MAIN, 
@@ -217,7 +297,7 @@ layout_main = [[
                 pad=((15, 15), (15, 15)))
     ],[
         sg.StatusBar('', 
-                key=KEY_STATUS_BAR, 
+                key=KEY_STATUS_BAR_GROUPS, 
                 size=50, 
                 pad=((15, 15), (10, 15)), 
                 auto_size_text=True,
@@ -256,10 +336,18 @@ layout_group_edit = [[
                 sg.Button('Add Web Page', key=KEY_BUTTON_ADD_WEB_PAGE),
                 sg.Button('Delete Selected Entries', key=KEY_BUTTON_DELETE_ENTRIES, disabled=True),
                 sg.Button('Edit Selected Details', key=KEY_BUTTON_EDIT_DETAILS, disabled=True),
+                sg.Button('Start Listening', key=KEY_BUTTON_LISTEN_TO_DIR),
                 sg.Button('Back', key=KEY_BUTTON_BACK_GROUP_EDIT),
                 ]],
                 pad=((15, 15), (0, 7))),
         sg.Stretch()
+    ],[
+        sg.StatusBar('', 
+                key=KEY_STATUS_BAR_ENTRIES, 
+                size=80, 
+                pad=((15, 15), (10, 15)),
+                auto_size_text=True,
+                font=('Verdana', 10, 'normal'))
     ]
 ]
 layout_help = [[
@@ -301,11 +389,11 @@ while True:
     elif event == KEY_BUTTON_OPEN_GROUP:
         selected_group_id = values[KEY_TREE_MAIN][0]
         group_to_open = app_data.groups_data[selected_group_id]
-        window[KEY_STATUS_BAR].update(value=f"({time.strftime('%H:%M:%S', time.localtime())}) Opening \"{group_to_open[KEY_GROUP_NAME]}\" group...")
+        window[KEY_STATUS_BAR_GROUPS].update(value=f"({time.strftime('%H:%M:%S', time.localtime())}) Opening \"{group_to_open[KEY_GROUP_NAME]}\" group...")
         threading.Thread(target=async_group_opening, args=(group_to_open,)).start()
     
     elif event == EVENT_OPENING_COMPLETE:
-        window[KEY_STATUS_BAR].update(value=f"({time.strftime('%H:%M:%S', time.localtime())}) Group \"{group_to_open[KEY_GROUP_NAME]}\" opened.")
+        window[KEY_STATUS_BAR_GROUPS].update(value=f"({time.strftime('%H:%M:%S', time.localtime())}) Group \"{group_to_open[KEY_GROUP_NAME]}\" opened.")
 
     elif event == KEY_BUTTON_NEW_GROUP:
         group_name = sg.popup_get_text('How should the group be named?', 'Input a name for the new group')
@@ -324,10 +412,25 @@ while True:
         group_to_edit = app_data.groups_data[selected_group_id]
         window[KEY_LABEL_GROUP_NAME].update(f'{group_to_edit[KEY_GROUP_NAME]} Group')
         window[KEY_TREE_GROUP_EDIT].update(create_entries_tree_data())
+        if KEY_GROUP_LISTENING_DIR in group_to_edit:
+            window[KEY_BUTTON_LISTEN_TO_DIR].update('Stop Listening')
+            window[KEY_STATUS_BAR_ENTRIES].update(value=f"Listening on {group_to_edit[KEY_GROUP_LISTENING_DIR]}")
+        else:
+            window[KEY_BUTTON_LISTEN_TO_DIR].update('Start Listening')
+            window[KEY_STATUS_BAR_ENTRIES].update(value='')
         change_active_layout(KEY_LAYOUT_GROUP_EDIT)
     
     elif event == KEY_BUTTON_DELETE_GROUP:
-        app_data.groups_data[:] = [group for group in app_data.groups_data if group[KEY_GROUP_ID] not in values[KEY_TREE_MAIN]]
+        tmp = []
+        for group in app_data.groups_data:
+            if group[KEY_GROUP_ID] not in values[KEY_TREE_MAIN]:
+                tmp.append(group)
+            elif KEY_GROUP_LISTENING_DIR in group:
+                path_to_listen = group[KEY_GROUP_LISTENING_DIR]
+                watch = [watch for watch in listening_watches if watch.path == path_to_listen][0]
+                listening_observer.unschedule(watch)
+                listening_watches.remove(watch)
+        app_data.groups_data = tmp
         app_data.refresh_ids(for_groups=True)
         window[KEY_TREE_MAIN].update(create_groups_tree_data())
         window[KEY_BUTTON_SAVE_CHANGES].update(disabled=False)
@@ -337,7 +440,7 @@ while True:
         save_changes()
         window[KEY_BUTTON_SAVE_CHANGES].update(disabled=True)
         window[KEY_BUTTON_REVERT_CHANGES].update(disabled=True)
-        window[KEY_STATUS_BAR].update(value=f"({time.strftime('%H:%M:%S', time.localtime())}) Changes have been successfully saved!")
+        window[KEY_STATUS_BAR_GROUPS].update(value=f"({time.strftime('%H:%M:%S', time.localtime())}) Changes have been successfully saved!")
     
     elif event == KEY_BUTTON_REVERT_CHANGES:
         app_data.revert_changes()
@@ -345,7 +448,7 @@ while True:
         window[KEY_TREE_MAIN].update(create_groups_tree_data())
         window[KEY_BUTTON_SAVE_CHANGES].update(disabled=True)
         window[KEY_BUTTON_REVERT_CHANGES].update(disabled=True)
-        window[KEY_STATUS_BAR].update(value=f"({time.strftime('%H:%M:%S', time.localtime())}) Changes have been reverted!")
+        window[KEY_STATUS_BAR_GROUPS].update(value=f"({time.strftime('%H:%M:%S', time.localtime())}) Changes have been reverted!")
 
     elif event == KEY_BUTTON_HELP:
         change_active_layout(KEY_LAYOUT_HELP)
@@ -418,9 +521,32 @@ while True:
             window[KEY_BUTTON_SAVE_CHANGES].update(disabled=False)
             window[KEY_BUTTON_REVERT_CHANGES].update(disabled=False)
 
+    elif event == KEY_BUTTON_LISTEN_TO_DIR:
+        if window[KEY_BUTTON_LISTEN_TO_DIR].get_text().startswith('Start'):
+            path_to_listen = sg.popup_get_folder('Select the directory to listen:', title='Select Directory')
+            if path_to_listen is not None and path_to_listen != '':
+                listening_watches.append(listening_observer.schedule(listening_event_handler, path_to_listen))
+                group_to_edit[KEY_GROUP_LISTENING_DIR] = path_to_listen
+                window[KEY_BUTTON_SAVE_CHANGES].update(disabled=False)
+                window[KEY_BUTTON_REVERT_CHANGES].update(disabled=False)
+                window[KEY_BUTTON_LISTEN_TO_DIR].update('Stop Listening')
+                window[KEY_STATUS_BAR_ENTRIES].update(value=f"Listening on {path_to_listen}")
+        else:
+            path_to_listen = group_to_edit[KEY_GROUP_LISTENING_DIR]
+            watch = [watch for watch in listening_watches if watch.path == path_to_listen][0]
+            listening_observer.unschedule(watch)
+            listening_watches.remove(watch)
+            group_to_edit.pop(KEY_GROUP_LISTENING_DIR)
+            window[KEY_BUTTON_SAVE_CHANGES].update(disabled=False)
+            window[KEY_BUTTON_REVERT_CHANGES].update(disabled=False)
+            window[KEY_BUTTON_LISTEN_TO_DIR].update('Start Listening')
+            window[KEY_STATUS_BAR_ENTRIES].update(value='')
+
+
     elif event == KEY_BUTTON_BACK_GROUP_EDIT:
         window[KEY_TREE_MAIN].update(key=group_to_edit[KEY_GROUP_ID], value=[len(group_to_edit[KEY_GROUP_ENTRIES])])
         group_to_edit = None
         change_active_layout(KEY_LAYOUT_MAIN)
 
+on_app_exit()
 window.close()

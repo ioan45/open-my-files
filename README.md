@@ -10,6 +10,7 @@ This application uses:
 
 * [PySimpleGUI](https://github.com/PySimpleGUI/PySimpleGUI)
 * [Bootstrap Icons](https://github.com/twbs/icons)
+* [watchdog](https://github.com/gorakhargosh/watchdog)
 
 ## Installation
 
@@ -27,7 +28,7 @@ In short, you have to create groups (just some containers) and add to them the p
 
 The application is structured as follows:
 
-### **Main interface**
+### Main interface
 
 The main interface contains the list of groups, a checkbox for setting the application to start with Windows and a status bar for application messages. It also contains some buttons:
 * **Open Group** - Opens all entries added to the selected group. Each non-executable file will be opened using the default application for its type which is specified in the Windows settings. When it comes to web pages, those will be accessed using the default web browser which is set in the Windows settings.
@@ -40,13 +41,14 @@ The main interface contains the list of groups, a checkbox for setting the appli
 
 <p align="center"><img src="/res/main_interface.PNG?raw=true" width=70% height=70%/></p>
 
-### **Group editing interface**
+### Group editing interface
 
 This is the interface shown on pressing the **Edit Group** button mentioned above. Any changes made here can be saved using the **Save Changes** button from the main interface. This interface shows the list of entries added to the group as well as a few buttons:
 * **Add Files** - Adds files to the list by opening a window for you to select them from your system.
 * **Add Web Page** - It shows an input field where you can specify the URL of the web page that you want to add.
 * **Delete Selected Entries** - Removes the selected entries from the list.
 * **Edit Selected Details** - Each list entry has a details field which can be used for extra information about the entry. This button lets you edit the field for the selected entries.
+* **Start/Stop Listening** - You can make the group listen to changes made in a directory. Any file adding/deleting/renaming operation will be reflected in the group. Still, you have to save any changes occurred in the group. 
 * **Back** - Shows the main interface.
 
 <p align="center"><img src="/res/group_editing_interface.PNG?raw=true" align="center" width=100% height=100%/></p>
