@@ -30,7 +30,7 @@ The application is structured as follows:
 
 ### Main interface
 
-The main interface contains the list of groups, a checkbox for setting the application to start with Windows and a status bar for application messages. It also contains some buttons:
+The main interface contains the list of groups, checkboxes for setting the application to start with Windows and for enabling the auto saving feature, and a status bar for application messages. It also contains some buttons:
 * **Open Group** - Opens all entries added to the selected group. Each non-executable file will be opened using the default application for its type which is specified in the Windows settings. When it comes to web pages, those will be accessed using the default web browser which is set in the Windows settings.
 * **New Group** - Creates an empty group.
 * **Edit Group** - Shows the editing interface for the selected group.

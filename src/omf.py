@@ -27,6 +27,7 @@ KEY_ENTRY_PATH = 'entry_path'
 KEY_ENTRY_TYPE = 'entry_type'
 KEY_ENTRY_DETAILS = 'entry_details'
 KEY_SETTING_START_WITH_WINDOWS = 'start_with_windows'
+KEY_SETTING_AUTO_SAVE = 'auto_save'
 
 KEY_LAYOUT_MAIN = '-MAIN_LAYOUT-'
 KEY_LAYOUT_GROUP_EDIT = '-GROUP_EDIT_LAYOUT-'
@@ -53,6 +54,7 @@ KEY_STATUS_BAR_ENTRIES = '-ENTRIES_STATUS_BAR-'
 KEY_LABEL_GROUP_NAME = '-GROUP_NAME_LABEL-'
 KEY_HYPERLINK_HELP = '-HELP_HYPERLINK-'
 KEY_CHECKBOX_START_WITH_WINDOWS = '-START_WITH_WINDOWS-'
+KEY_CHECKBOX_AUTO_SAVE = '-AUTO_SAVE-'
 
 EVENT_OPENING_COMPLETE = '-OPENING_COMPLETE-'
 
@@ -114,13 +116,13 @@ class AppData:
                 entry[KEY_ENTRY_ID] = index
 
 def listening_on_created(event):
-    global app_data, window
     file_path = event.src_path.replace(os.sep, '/')
     if file_path.split('.')[-1] == 'exe':
         entry_type = ENTRY_EXE_FILE
     else:
         entry_type = ENTRY_OTHER_FILE
     path_to_listen = os.path.split(file_path)[0]
+    
     for group in app_data.groups_data:
         if KEY_GROUP_LISTENING_DIR in group and group[KEY_GROUP_LISTENING_DIR] == path_to_listen:
             group[KEY_GROUP_ENTRIES].append({
@@ -131,6 +133,7 @@ def listening_on_created(event):
             })
             if group_to_edit is None:
                 window[KEY_TREE_MAIN].update(key=group[KEY_GROUP_ID], value=[len(group[KEY_GROUP_ENTRIES])])
+    
     if group_to_edit is not None and KEY_GROUP_LISTENING_DIR in group_to_edit and group_to_edit[KEY_GROUP_LISTENING_DIR] == path_to_listen:
         window[KEY_TREE_GROUP_EDIT].update(create_entries_tree_data())
     window[KEY_BUTTON_SAVE_CHANGES].update(disabled=False)
@@ -138,15 +141,16 @@ def listening_on_created(event):
     window.refresh()
 
 def listening_on_deleted(event):
-    global app_data, window
     file_path = event.src_path.replace(os.sep, '/')
     path_to_listen = os.path.split(file_path)[0]
+
     for group in app_data.groups_data:
         if KEY_GROUP_LISTENING_DIR in group and group[KEY_GROUP_LISTENING_DIR] == path_to_listen:
             group[KEY_GROUP_ENTRIES][:] = [entry for entry in group[KEY_GROUP_ENTRIES] if entry[KEY_ENTRY_PATH] != file_path]
             app_data.refresh_ids(for_group_with_id=group[KEY_GROUP_ID])
             if group_to_edit is None:
                 window[KEY_TREE_MAIN].update(key=group[KEY_GROUP_ID], value=[len(group[KEY_GROUP_ENTRIES])])
+    
     if group_to_edit is not None and KEY_GROUP_LISTENING_DIR in group_to_edit and group_to_edit[KEY_GROUP_LISTENING_DIR] == path_to_listen:
         window[KEY_TREE_GROUP_EDIT].update(create_entries_tree_data())
     window[KEY_BUTTON_SAVE_CHANGES].update(disabled=False)
@@ -154,15 +158,16 @@ def listening_on_deleted(event):
     window.refresh()
 
 def listening_on_moved(event):
-    global app_data, window
     old_file_path = event.src_path.replace(os.sep, '/')
     new_file_path = event.dest_path.replace(os.sep, '/')
     path_to_listen = os.path.split(old_file_path)[0]
+
     for group in app_data.groups_data:
         if KEY_GROUP_LISTENING_DIR in group and group[KEY_GROUP_LISTENING_DIR] == path_to_listen:
             for entry in group[KEY_GROUP_ENTRIES]:
                 if entry[KEY_ENTRY_PATH] == old_file_path:
                     entry[KEY_ENTRY_PATH] = new_file_path
+    
     if group_to_edit is not None and KEY_GROUP_LISTENING_DIR in group_to_edit and group_to_edit[KEY_GROUP_LISTENING_DIR] == path_to_listen:
         window[KEY_TREE_GROUP_EDIT].update(create_entries_tree_data())
     window[KEY_BUTTON_SAVE_CHANGES].update(disabled=False)
@@ -196,16 +201,34 @@ def change_active_layout(to_layout_key):
     window.move_to_center()
     window.reappear()
 
+def update_groups_status_bar(message):
+    with groups_status_bar_lock:
+        window[KEY_STATUS_BAR_GROUPS].update(value=message)
+
 def save_changes():
-    global app_data
+    with check_if_saving_lock:
+        if is_saving.is_set():
+            return
+        else:
+            is_saving.set()
+
+    if threading.current_thread() is threading.main_thread():
+        update_groups_status_bar(f"({time.strftime('%H:%M:%S', time.localtime())}) Saving changes...")
+    else:
+        update_groups_status_bar(f"({time.strftime('%H:%M:%S', time.localtime())}) Auto save: Saving changes...")
+
+    window[KEY_BUTTON_SAVE_CHANGES].update(disabled=True)
+    window[KEY_BUTTON_REVERT_CHANGES].update(disabled=True)
     app_data.save_group_data()
     app_data.save_settings()
     set_start_with_windows(app_data.settings[KEY_SETTING_START_WITH_WINDOWS])
 
-def on_app_exit():
-    global listening_observer
-    listening_observer.stop()
-    listening_observer.join()
+    if threading.current_thread() is threading.main_thread():
+        update_groups_status_bar(f"({time.strftime('%H:%M:%S', time.localtime())}) Changes have been successfully saved!")
+    else:
+        update_groups_status_bar(f"({time.strftime('%H:%M:%S', time.localtime())}) Auto save: Changes have been successfully saved!")
+
+    is_saving.clear()
 
 def set_start_with_windows(enabled):
     app_key = 'OpenMyFiles'
@@ -225,6 +248,13 @@ def set_start_with_windows(enabled):
                 pass
         else:
             winreg.SetValueEx(reg_key, app_key, 0, winreg.REG_SZ, path_to_exe)
+
+def async_auto_saving():
+    auto_save_delay_s = 60
+    while True:
+        time.sleep(auto_save_delay_s)
+        if auto_save_enabled.is_set() and not window[KEY_BUTTON_SAVE_CHANGES].Disabled:
+            save_changes()
 
 def async_group_opening(group_to_open):
     tabs_opened = 0
@@ -250,7 +280,15 @@ app_data.load_settings()
 
 active_layout_key = KEY_LAYOUT_MAIN
 group_to_edit = None
-should_start_with_windows = None
+groups_status_bar_lock = threading.Lock()
+
+check_if_saving_lock = threading.Lock()
+is_saving = threading.Event()
+auto_save_enabled = threading.Event()
+if KEY_SETTING_AUTO_SAVE in app_data.settings and app_data.settings[KEY_SETTING_AUTO_SAVE]:
+    auto_save_enabled.set()
+auto_save_thread = threading.Thread(target=async_auto_saving, daemon=True)
+auto_save_thread.start()
 
 listening_event_handler = PatternMatchingEventHandler('*', None, True, True)
 listening_event_handler.on_created = listening_on_created
@@ -306,6 +344,10 @@ layout_main = [[
         sg.Checkbox('Launch the application when Windows starts', 
                 key=KEY_CHECKBOX_START_WITH_WINDOWS,
                 default=app_data.settings[KEY_SETTING_START_WITH_WINDOWS] if KEY_SETTING_START_WITH_WINDOWS in app_data.settings else False,
+                enable_events=True),
+        sg.Checkbox('Auto save changes (once per minute)', 
+                key=KEY_CHECKBOX_AUTO_SAVE,
+                default=app_data.settings[KEY_SETTING_AUTO_SAVE] if KEY_SETTING_AUTO_SAVE in app_data.settings else False,
                 enable_events=True)
     ]
 ]
@@ -389,11 +431,11 @@ while True:
     elif event == KEY_BUTTON_OPEN_GROUP:
         selected_group_id = values[KEY_TREE_MAIN][0]
         group_to_open = app_data.groups_data[selected_group_id]
-        window[KEY_STATUS_BAR_GROUPS].update(value=f"({time.strftime('%H:%M:%S', time.localtime())}) Opening \"{group_to_open[KEY_GROUP_NAME]}\" group...")
+        update_groups_status_bar(f"({time.strftime('%H:%M:%S', time.localtime())}) Opening \"{group_to_open[KEY_GROUP_NAME]}\" group...")
         threading.Thread(target=async_group_opening, args=(group_to_open,)).start()
     
     elif event == EVENT_OPENING_COMPLETE:
-        window[KEY_STATUS_BAR_GROUPS].update(value=f"({time.strftime('%H:%M:%S', time.localtime())}) Group \"{group_to_open[KEY_GROUP_NAME]}\" opened.")
+        update_groups_status_bar(f"({time.strftime('%H:%M:%S', time.localtime())}) Group \"{group_to_open[KEY_GROUP_NAME]}\" opened.")
 
     elif event == KEY_BUTTON_NEW_GROUP:
         group_name = sg.popup_get_text('How should the group be named?', 'Input a name for the new group')
@@ -438,9 +480,6 @@ while True:
 
     elif event == KEY_BUTTON_SAVE_CHANGES:
         save_changes()
-        window[KEY_BUTTON_SAVE_CHANGES].update(disabled=True)
-        window[KEY_BUTTON_REVERT_CHANGES].update(disabled=True)
-        window[KEY_STATUS_BAR_GROUPS].update(value=f"({time.strftime('%H:%M:%S', time.localtime())}) Changes have been successfully saved!")
     
     elif event == KEY_BUTTON_REVERT_CHANGES:
         app_data.revert_changes()
@@ -448,7 +487,7 @@ while True:
         window[KEY_TREE_MAIN].update(create_groups_tree_data())
         window[KEY_BUTTON_SAVE_CHANGES].update(disabled=True)
         window[KEY_BUTTON_REVERT_CHANGES].update(disabled=True)
-        window[KEY_STATUS_BAR_GROUPS].update(value=f"({time.strftime('%H:%M:%S', time.localtime())}) Changes have been reverted!")
+        update_groups_status_bar(f"({time.strftime('%H:%M:%S', time.localtime())}) Changes have been reverted!")
 
     elif event == KEY_BUTTON_HELP:
         change_active_layout(KEY_LAYOUT_HELP)
@@ -458,6 +497,16 @@ while True:
     
     elif event == KEY_CHECKBOX_START_WITH_WINDOWS:
         app_data.settings[KEY_SETTING_START_WITH_WINDOWS] = values[KEY_CHECKBOX_START_WITH_WINDOWS]
+        window[KEY_BUTTON_SAVE_CHANGES].update(disabled=False)
+        window[KEY_BUTTON_REVERT_CHANGES].update(disabled=False)
+
+    elif event == KEY_CHECKBOX_AUTO_SAVE:
+        checked = values[KEY_CHECKBOX_AUTO_SAVE]
+        if checked:
+            auto_save_enabled.set()
+        else:
+            auto_save_enabled.clear()
+        app_data.settings[KEY_SETTING_AUTO_SAVE] = checked
         window[KEY_BUTTON_SAVE_CHANGES].update(disabled=False)
         window[KEY_BUTTON_REVERT_CHANGES].update(disabled=False)
 
@@ -548,5 +597,6 @@ while True:
         group_to_edit = None
         change_active_layout(KEY_LAYOUT_MAIN)
 
-on_app_exit()
 window.close()
+listening_observer.stop()
+listening_observer.join()
