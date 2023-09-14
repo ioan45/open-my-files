@@ -256,9 +256,10 @@ def async_auto_saving():
         if auto_save_enabled.is_set() and not window[KEY_BUTTON_SAVE_CHANGES].Disabled:
             save_changes()
 
-def async_group_opening(group_to_open):
+def async_group_opening(group_name, entries_to_open):
+    update_groups_status_bar(f"({time.strftime('%H:%M:%S', time.localtime())}) Opening \"{group_name}\" group...")
     tabs_opened = 0
-    for entry in group_to_open[KEY_GROUP_ENTRIES]:
+    for entry in entries_to_open:
         if entry[KEY_ENTRY_TYPE] == ENTRY_WEB_PAGE:
             # For some browsers (e.g. Firefox), if they are closed when group opening starts, it may be required to wait a bit for 
             # them to initialize on opening the first tab before opening others.
@@ -268,9 +269,9 @@ def async_group_opening(group_to_open):
             # Also, in this case, webbrowser.open(URL) will use Microsoft Edge regardless of the default browser.
             subprocess.Popen([DEFAULT_BROWSER_PATH, entry[KEY_ENTRY_PATH]], creationflags=subprocess.DETACHED_PROCESS)
             tabs_opened += 1
-        else:
+        elif os.path.isfile(entry[KEY_ENTRY_PATH]):
             os.startfile(entry[KEY_ENTRY_PATH])
-    window.write_event_value(EVENT_OPENING_COMPLETE, None)
+    update_groups_status_bar(f"({time.strftime('%H:%M:%S', time.localtime())}) Group \"{group_name}\" opened.")
 
 sg.theme('DarkAmber')
 
@@ -430,12 +431,9 @@ while True:
 
     elif event == KEY_BUTTON_OPEN_GROUP:
         selected_group_id = values[KEY_TREE_MAIN][0]
-        group_to_open = app_data.groups_data[selected_group_id]
-        update_groups_status_bar(f"({time.strftime('%H:%M:%S', time.localtime())}) Opening \"{group_to_open[KEY_GROUP_NAME]}\" group...")
-        threading.Thread(target=async_group_opening, args=(group_to_open,)).start()
-    
-    elif event == EVENT_OPENING_COMPLETE:
-        update_groups_status_bar(f"({time.strftime('%H:%M:%S', time.localtime())}) Group \"{group_to_open[KEY_GROUP_NAME]}\" opened.")
+        group_name = app_data.groups_data[selected_group_id][KEY_GROUP_NAME]
+        entries_to_open = deepcopy(app_data.groups_data[selected_group_id][KEY_GROUP_ENTRIES])
+        threading.Thread(target=async_group_opening, args=(group_name, entries_to_open)).start()
 
     elif event == KEY_BUTTON_NEW_GROUP:
         group_name = sg.popup_get_text('How should the group be named?', 'Input a name for the new group')
