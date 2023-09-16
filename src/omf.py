@@ -791,7 +791,7 @@ class App:
                 actions = copy(self.win_interface_events[event])
                 for action in actions:
                     action(values)
-            if event == sg.WIN_CLOSE_ATTEMPTED_EVENT:
+            if event == sg.WIN_CLOSE_ATTEMPTED_EVENT and event not in self.win_global_events and event not in self.win_interface_events:
                 self.signal_shutdown()
         self.__shutdown()
     
